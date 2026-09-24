@@ -21,16 +21,23 @@ version: 0.2
 # CodePipeline ya clona el repo como "source" en formato CODEBUILD_CLONE_REF (full clone),
 # así que aquí solo hace falta un fetch adicional para asegurar todas las referencias/ramas
 # antes de empujar el mirror completo.
+#
+# NOTA DE SINTAXIS: en buildspec YAML, un ":" seguido de espacio dentro de un comando sin
+# comillas se interpreta como un mapping key, no como texto. Por eso los mensajes de eco
+# de este archivo evitan "Palabra: texto" y usan "Palabra -" en su lugar.
+
+env:
+  git-credential-helper: yes
 
 phases:
   pre_build:
     commands:
-      - echo "Leyendo configuración del remoto Git desde SSM Parameter Store"
+      - echo "Leyendo configuracion del remoto Git desde SSM Parameter Store"
       - GIT_REMOTE_HOST=$(aws ssm get-parameter --name "/${PROJECT_NAME}/git_remote_host" --query 'Parameter.Value' --output text)
       - GIT_REMOTE_PATH=$(aws ssm get-parameter --name "/${PROJECT_NAME}/git_remote_path" --query 'Parameter.Value' --output text)
       - echo "Recuperando token del remoto Git desde Secrets Manager"
       - GIT_REMOTE_TOKEN=$(aws secretsmanager get-secret-value --secret-id "$GIT_REMOTE_TOKEN_SECRET_ARN" --query 'SecretString' --output text)
-      - if [ -z "$GIT_REMOTE_TOKEN" ] || [ "$GIT_REMOTE_TOKEN" = "None" ]; then echo "ERROR: el secret del remoto Git está vacío. Rellénalo con aws secretsmanager put-secret-value antes de ejecutar el pipeline." && exit 1; fi
+      - test -n "$GIT_REMOTE_TOKEN" -a "$GIT_REMOTE_TOKEN" != "None" || (echo "ERROR - el secret del remoto Git esta vacio. Rellenalo con aws secretsmanager put-secret-value antes de ejecutar el pipeline." && exit 1)
 
   build:
     commands:
@@ -46,17 +53,7 @@ phases:
       # tanto GitHub como GitLab (y la mayoría de proveedores) solo validan el token,
       # el username puede ser casi cualquier string no vacío.
       - GIT_REMOTE_URL_WITH_AUTH="https://git:${GIT_REMOTE_TOKEN}@${GIT_REMOTE_HOST}/${GIT_REMOTE_PATH}.git"
-      - |
-        if ! git push --mirror "$GIT_REMOTE_URL_WITH_AUTH" 2>/tmp/mirror_push_error.log; then
-          echo "ERROR: git push --mirror falló."
-          cat /tmp/mirror_push_error.log
-          echo ""
-          echo "Verifica que:"
-          echo "  1. El repo remoto exista en https://${GIT_REMOTE_HOST}/${GIT_REMOTE_PATH}"
-          echo "     (créalo con scripts/create-remote-repo-<proveedor>.sh si es la primera vez)"
-          echo "  2. El token en Secrets Manager tenga permisos de escritura sobre ese repo"
-          exit 1
-        fi
+      - git push --mirror "$GIT_REMOTE_URL_WITH_AUTH" 2>/tmp/mirror_push_error.log || (echo "ERROR - git push --mirror fallo." && cat /tmp/mirror_push_error.log && echo "Verifica que el repo remoto exista en https://${GIT_REMOTE_HOST}/${GIT_REMOTE_PATH} (crealo con scripts/create-remote-repo-<proveedor>.sh) y que el token tenga permisos de escritura." && exit 1)
       - echo "Mirror completado"
 
   post_build:

@@ -79,3 +79,26 @@ resource "aws_ssm_parameter" "git_remote_host" {
 
   tags = var.tags
 }
+
+# -----------------------------------------------------------------------------
+# Backend remoto de Terraform para environments/* — leído por buildspecs/plan.yml
+# y apply.yml al hacer `terraform init -backend-config=...` (backend parcial).
+# -----------------------------------------------------------------------------
+
+resource "aws_ssm_parameter" "tf_state_bucket" {
+  name        = "/${var.project_name}/tf_state_bucket"
+  description = "Bucket S3 del backend remoto de Terraform para environments/*"
+  type        = "String"
+  value       = var.tf_state_bucket
+
+  tags = var.tags
+}
+
+resource "aws_ssm_parameter" "tf_state_lock_table" {
+  name        = "/${var.project_name}/tf_state_lock_table"
+  description = "Tabla DynamoDB de locking del backend remoto de Terraform para environments/*"
+  type        = "String"
+  value       = var.tf_state_lock_table
+
+  tags = var.tags
+}

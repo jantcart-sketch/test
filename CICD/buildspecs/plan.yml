@@ -2,6 +2,13 @@ version: 0.2
 
 # Stage 3 de ambos pipelines: terraform init + plan contra la cuenta destino del entorno.
 #
+# El backend S3 (state) vive en la cuenta del PIPELINE; los recursos desplegados viven en
+# la cuenta DESTINO. Por eso las credenciales de CodeBuild (cuenta pipeline) se usan tal
+# cual para `terraform init` (acceso al backend), y el cambio de cuenta para los recursos
+# lo hace el propio provider "aws" de environments/* vía `assume_role` (ver
+# environments/*/providers.tf), pasando target_role_arn como variable de Terraform. Así
+# nunca se pisan las credenciales de shell con un assume-role manual.
+#
 # Variables de entorno esperadas (inyectadas por el proyecto CodeBuild, ver codebuild.tf):
 #   PROJECT_NAME       - nombre del proyecto (para las rutas SSM)
 #   ENVIRONMENT        - "dev" o "main", según la rama que disparó el pipeline
@@ -18,25 +25,18 @@ phases:
   pre_build:
     commands:
       - echo "Leyendo configuración del entorno ${ENVIRONMENT} desde SSM"
+      - TF_STATE_BUCKET=$(aws ssm get-parameter --name "/${PROJECT_NAME}/tf_state_bucket" --query 'Parameter.Value' --output text)
+      - TF_STATE_LOCK_TABLE=$(aws ssm get-parameter --name "/${PROJECT_NAME}/tf_state_lock_table" --query 'Parameter.Value' --output text)
       - TARGET_ROLE_ARN=$(aws ssm get-parameter --name "/${PROJECT_NAME}/${ENVIRONMENT}/target_role_arn" --query 'Parameter.Value' --output text)
-      - if [ -z "$TARGET_ROLE_ARN" ] || [ "$TARGET_ROLE_ARN" = "None" ]; then echo "ERROR: no existe el parámetro SSM /${PROJECT_NAME}/${ENVIRONMENT}/target_role_arn. Ejecuta scripts/set-cross-account-target.sh para definirlo y vuelve a aplicar pipeline/." && exit 1; fi
-      - echo "Asumiendo rol cross-account $TARGET_ROLE_ARN"
-      - |
-        CREDS=$(aws sts assume-role \
-          --role-arn "$TARGET_ROLE_ARN" \
-          --role-session-name "codebuild-${ENVIRONMENT}-plan" \
-          --external-id "${PROJECT_NAME}")
-      - export AWS_ACCESS_KEY_ID=$(echo $CREDS | jq -r '.Credentials.AccessKeyId')
-      - export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | jq -r '.Credentials.SecretAccessKey')
-      - export AWS_SESSION_TOKEN=$(echo $CREDS | jq -r '.Credentials.SessionToken')
+      - test -n "$TARGET_ROLE_ARN" -a "$TARGET_ROLE_ARN" != "None" || (echo "ERROR - no existe el parametro SSM /${PROJECT_NAME}/${ENVIRONMENT}/target_role_arn. Ejecuta scripts/set-cross-account-target.sh para definirlo y vuelve a aplicar pipeline/." && exit 1)
 
   build:
     commands:
       - cd "CICD/environments/${ENVIRONMENT}"
       - echo "terraform init"
-      - terraform init -input=false
+      - terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=environments/${ENVIRONMENT}/terraform.tfstate" -backend-config="region=${AWS_DEFAULT_REGION}" -backend-config="dynamodb_table=${TF_STATE_LOCK_TABLE}"
       - echo "terraform plan"
-      - terraform plan -input=false -out=tfplan
+      - terraform plan -input=false -var="project_name=${PROJECT_NAME}" -var="target_role_arn=${TARGET_ROLE_ARN}" -out=tfplan
       - terraform show -no-color tfplan > tfplan.txt
 
   post_build:
