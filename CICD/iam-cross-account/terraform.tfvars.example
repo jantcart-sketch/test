@@ -1,0 +1,17 @@
+# Aplicar con credenciales de la cuenta DESTINO (dev o main/prod), NO con las de la
+# cuenta del pipeline. Un archivo distinto por cuenta, ej. dev.tfvars / main.tfvars.
+
+project_name         = "mi-proyecto"
+role_name            = "cicd-deploy-role"
+pipeline_account_id  = "771675725366" # cuenta donde vive CodeCommit/CodePipeline/CodeBuild
+environment          = "dev"          # o "main"
+
+# Opcional, recomendado en cuentas de producción:
+# permissions_boundary_arn = "arn:aws:iam::222222222222:policy/OrgDeployBoundary"
+
+managed_policy_arns = []
+
+tags = {
+  ManagedBy = "terraform"
+  Project   = "mi-proyecto"
+}

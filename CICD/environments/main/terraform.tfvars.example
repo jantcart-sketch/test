@@ -1,0 +1,8 @@
+project_name = "mi-proyecto"
+aws_region   = "us-east-1"
+
+tags = {
+  ManagedBy   = "terraform"
+  Environment = "main"
+  Project     = "mi-proyecto"
+}

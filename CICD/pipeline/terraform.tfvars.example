@@ -1,0 +1,35 @@
+# Copia este archivo a terraform.tfvars y rellena los valores.
+#
+# IMPORTANTE: antes del primer `terraform apply` de este módulo, deben existir en SSM
+# los parámetros /{project_name}/{environment}/target_role_arn para "dev" y "main"
+# (ver README, Fases 1-2, y scripts/set-cross-account-target.sh). Si no existen, el
+# apply falla porque secrets.tf los lee como data source.
+
+project_name = "mi-proyecto"
+aws_region   = "us-east-1"
+
+branches = {
+  develop = {
+    environment = "dev"
+    auto_apply  = true
+  }
+  main = {
+    environment = "main"
+    auto_apply  = false
+  }
+}
+
+gitlab_base_url     = "https://gitlab.com/api/v4"
+gitlab_project_path = "mi-grupo/mi-proyecto"
+
+codebuild_image        = "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+codebuild_compute_type  = "BUILD_GENERAL1_SMALL"
+terraform_version       = "1.9.8"
+
+tf_state_bucket     = "mi-proyecto-tfstate"      # output de bootstrap/ (Fase 0)
+tf_state_lock_table = "mi-proyecto-tfstate-lock" # output de bootstrap/ (Fase 0)
+
+tags = {
+  ManagedBy = "terraform"
+  Project   = "mi-proyecto"
+}

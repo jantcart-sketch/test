@@ -1,0 +1,44 @@
+version: 0.2
+
+# Stage final de ambos pipelines: terraform apply usando el plan generado en el stage
+# anterior (artifact "tfplan"). En "develop" se ejecuta automáticamente; en "main" solo
+# se llega aquí tras la Manual Approval.
+#
+# Variables de entorno esperadas (inyectadas por el proyecto CodeBuild, ver codebuild.tf):
+#   PROJECT_NAME       - nombre del proyecto (para las rutas SSM)
+#   ENVIRONMENT        - "dev" o "main", según la rama que disparó el pipeline
+#   TERRAFORM_VERSION  - versión de Terraform a instalar
+
+phases:
+  install:
+    commands:
+      - echo "Instalando Terraform ${TERRAFORM_VERSION}"
+      - curl -sO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+      - unzip -o "terraform_${TERRAFORM_VERSION}_linux_amd64.zip" -d /usr/local/bin
+      - terraform -version
+
+  pre_build:
+    commands:
+      - echo "Leyendo configuración del entorno ${ENVIRONMENT} desde SSM"
+      - TARGET_ROLE_ARN=$(aws ssm get-parameter --name "/${PROJECT_NAME}/${ENVIRONMENT}/target_role_arn" --query 'Parameter.Value' --output text)
+      - echo "Asumiendo rol cross-account $TARGET_ROLE_ARN"
+      - |
+        CREDS=$(aws sts assume-role \
+          --role-arn "$TARGET_ROLE_ARN" \
+          --role-session-name "codebuild-${ENVIRONMENT}-apply" \
+          --external-id "${PROJECT_NAME}")
+      - export AWS_ACCESS_KEY_ID=$(echo $CREDS | jq -r '.Credentials.AccessKeyId')
+      - export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | jq -r '.Credentials.SecretAccessKey')
+      - export AWS_SESSION_TOKEN=$(echo $CREDS | jq -r '.Credentials.SessionToken')
+
+  build:
+    commands:
+      - cd "CICD/environments/${ENVIRONMENT}"
+      - echo "terraform init"
+      - terraform init -input=false
+      - echo "terraform apply (usando el plan generado en el stage anterior)"
+      - terraform apply -input=false -auto-approve tfplan
+
+  post_build:
+    commands:
+      - echo "Apply completado para el entorno ${ENVIRONMENT}"

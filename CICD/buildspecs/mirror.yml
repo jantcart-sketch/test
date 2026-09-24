@@ -1,0 +1,64 @@
+version: 0.2
+
+# Stage 2 de ambos pipelines: espeja el repo CodeCommit hacia un remoto Git externo.
+#
+# 100% AGNÓSTICO AL PROVEEDOR: solo usa el protocolo Git (git fetch / git push --mirror)
+# contra una URL HTTPS genérica (host + path + token). No llama a ninguna API REST de
+# GitHub, GitLab ni de ningún otro proveedor — por eso puede apuntar a cualquiera de
+# ellos sin cambiar una línea de este archivo.
+#
+# La CREACIÓN del repo remoto (si no existe) NO es responsabilidad de este buildspec:
+# es una operación de la API propia de cada plataforma, y vive en scripts aparte,
+# ejecutados manualmente una vez (ver scripts/create-remote-repo-*.sh y README).
+# Si el repo remoto no existe, el `git push --mirror` de abajo simplemente falla con un
+# error de Git reconocible, y este buildspec lo traduce a un mensaje claro.
+#
+# Variables de entorno esperadas (inyectadas por el proyecto CodeBuild, ver codebuild.tf):
+#   PROJECT_NAME                - nombre del proyecto (para las rutas SSM)
+#   GIT_REMOTE_TOKEN_SECRET_ARN - ARN del secret en Secrets Manager con el token del remoto
+#   CODECOMMIT_REPO_NAME        - nombre del repo CodeCommit
+#
+# CodePipeline ya clona el repo como "source" en formato CODEBUILD_CLONE_REF (full clone),
+# así que aquí solo hace falta un fetch adicional para asegurar todas las referencias/ramas
+# antes de empujar el mirror completo.
+
+phases:
+  pre_build:
+    commands:
+      - echo "Leyendo configuración del remoto Git desde SSM Parameter Store"
+      - GIT_REMOTE_HOST=$(aws ssm get-parameter --name "/${PROJECT_NAME}/git_remote_host" --query 'Parameter.Value' --output text)
+      - GIT_REMOTE_PATH=$(aws ssm get-parameter --name "/${PROJECT_NAME}/git_remote_path" --query 'Parameter.Value' --output text)
+      - echo "Recuperando token del remoto Git desde Secrets Manager"
+      - GIT_REMOTE_TOKEN=$(aws secretsmanager get-secret-value --secret-id "$GIT_REMOTE_TOKEN_SECRET_ARN" --query 'SecretString' --output text)
+      - if [ -z "$GIT_REMOTE_TOKEN" ] || [ "$GIT_REMOTE_TOKEN" = "None" ]; then echo "ERROR: el secret del remoto Git está vacío. Rellénalo con aws secretsmanager put-secret-value antes de ejecutar el pipeline." && exit 1; fi
+
+  build:
+    commands:
+      # --- Fetch completo del repo CodeCommit (asegura todas las ramas y tags) ---
+      - echo "Haciendo fetch completo de CodeCommit"
+      - git fetch --all --tags --prune
+
+      # --- Push --mirror hacia el remoto, autenticado con el token vía URL embebida
+      #     (solo en runtime, nunca queda persistido en ningún fichero del repo).
+      #     Esto es Git puro: funciona igual contra GitHub, GitLab, Bitbucket, etc. ---
+      - echo "Empujando mirror completo hacia ${GIT_REMOTE_HOST}/${GIT_REMOTE_PATH}"
+      # "git" como username es un placeholder neutro válido para HTTP Basic Auth:
+      # tanto GitHub como GitLab (y la mayoría de proveedores) solo validan el token,
+      # el username puede ser casi cualquier string no vacío.
+      - GIT_REMOTE_URL_WITH_AUTH="https://git:${GIT_REMOTE_TOKEN}@${GIT_REMOTE_HOST}/${GIT_REMOTE_PATH}.git"
+      - |
+        if ! git push --mirror "$GIT_REMOTE_URL_WITH_AUTH" 2>/tmp/mirror_push_error.log; then
+          echo "ERROR: git push --mirror falló."
+          cat /tmp/mirror_push_error.log
+          echo ""
+          echo "Verifica que:"
+          echo "  1. El repo remoto exista en https://${GIT_REMOTE_HOST}/${GIT_REMOTE_PATH}"
+          echo "     (créalo con scripts/create-remote-repo-<proveedor>.sh si es la primera vez)"
+          echo "  2. El token en Secrets Manager tenga permisos de escritura sobre ese repo"
+          exit 1
+        fi
+      - echo "Mirror completado"
+
+  post_build:
+    commands:
+      - echo "Stage mirror-git-remote finalizado"

@@ -1,0 +1,51 @@
+version: 0.2
+
+# Stage 3 de ambos pipelines: terraform init + plan contra la cuenta destino del entorno.
+#
+# Variables de entorno esperadas (inyectadas por el proyecto CodeBuild, ver codebuild.tf):
+#   PROJECT_NAME       - nombre del proyecto (para las rutas SSM)
+#   ENVIRONMENT        - "dev" o "main", según la rama que disparó el pipeline
+#   TERRAFORM_VERSION  - versión de Terraform a instalar
+
+phases:
+  install:
+    commands:
+      - echo "Instalando Terraform ${TERRAFORM_VERSION}"
+      - curl -sO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+      - unzip -o "terraform_${TERRAFORM_VERSION}_linux_amd64.zip" -d /usr/local/bin
+      - terraform -version
+
+  pre_build:
+    commands:
+      - echo "Leyendo configuración del entorno ${ENVIRONMENT} desde SSM"
+      - TARGET_ROLE_ARN=$(aws ssm get-parameter --name "/${PROJECT_NAME}/${ENVIRONMENT}/target_role_arn" --query 'Parameter.Value' --output text)
+      - if [ -z "$TARGET_ROLE_ARN" ] || [ "$TARGET_ROLE_ARN" = "None" ]; then echo "ERROR: no existe el parámetro SSM /${PROJECT_NAME}/${ENVIRONMENT}/target_role_arn. Ejecuta scripts/set-cross-account-target.sh para definirlo y vuelve a aplicar pipeline/." && exit 1; fi
+      - echo "Asumiendo rol cross-account $TARGET_ROLE_ARN"
+      - |
+        CREDS=$(aws sts assume-role \
+          --role-arn "$TARGET_ROLE_ARN" \
+          --role-session-name "codebuild-${ENVIRONMENT}-plan" \
+          --external-id "${PROJECT_NAME}")
+      - export AWS_ACCESS_KEY_ID=$(echo $CREDS | jq -r '.Credentials.AccessKeyId')
+      - export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | jq -r '.Credentials.SecretAccessKey')
+      - export AWS_SESSION_TOKEN=$(echo $CREDS | jq -r '.Credentials.SessionToken')
+
+  build:
+    commands:
+      - cd "CICD/environments/${ENVIRONMENT}"
+      - echo "terraform init"
+      - terraform init -input=false
+      - echo "terraform plan"
+      - terraform plan -input=false -out=tfplan
+      - terraform show -no-color tfplan > tfplan.txt
+
+  post_build:
+    commands:
+      - echo "Plan generado para el entorno ${ENVIRONMENT}"
+
+artifacts:
+  base-directory: CICD/environments/${ENVIRONMENT}
+  files:
+    - tfplan
+    - tfplan.txt
+    - '**/*'
